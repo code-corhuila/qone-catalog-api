@@ -1,0 +1,386 @@
+openapi: 3.0.3
+info:
+  title: qone-catalog-api
+  version: 2.0.0
+  description: |
+    Academic catalog domain of Qampus (ADR-006): subjects with prerequisites, sections with
+    schedule and seats, and the seat reservations the enrollment saga takes, releases and commits
+    (ADR-008, steps `reserve-seat` and `commit-seat`). Operations CA-01..CA-12 of
+    `../../endpoint-catalog.md`. Shared components: `./_shared.yaml`. Data: `06-data/models.md`,
+    schema `catalog`. Every write puts its event (`SubjectCreated`, `SectionCreated`,
+    `SeatReserved`, `SeatReleased`, `SeatCommitted`) in the outbox in the same transaction.
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Through qone-api-gateway
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: subjects
+  - name: sections
+  - name: reservations
+    description: SERVICE token only - the enrollment saga is the sole client
+
+paths:
+  /catalog/health:
+    get:
+      tags: [subjects]
+      summary: Liveness of the catalog service (CA-01)
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: './_shared.yaml#/components/schemas/Health' }
+
+  /catalog/subjects:
+    get:
+      tags: [subjects]
+      summary: List subjects, newest first (CA-02)
+      parameters:
+        - $ref: './_shared.yaml#/components/parameters/Page'
+        - $ref: './_shared.yaml#/components/parameters/Limit'
+        - name: semester
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 12 }
+      responses:
+        '200':
+          description: A page of subjects
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SubjectPage' }
+        '400': { $ref: './_shared.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared.yaml#/components/responses/Unauthorized' }
+    post:
+      tags: [subjects]
+      summary: Create a subject (CA-03)
+      description: |
+        ADMIN only. `code` is unique (`INV-SUB-001`); every prerequisite must exist and the
+        prerequisite graph must stay acyclic (`INV-SUB-002`); both are `422 BUSINESS_RULE_VIOLATION`.
+      parameters:
+        - $ref: './_shared.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SubjectRequest' }
+      responses:
+        '201':
+          description: Subject created
+          headers:
+            Location: { $ref: './_shared.yaml#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Subject' }
+        '200':
+          description: Same `Idempotency-Key` - the subject created the first time
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Subject' }
+        '400': { $ref: './_shared.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_shared.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_shared.yaml#/components/responses/BusinessRuleViolation' }
+
+  /catalog/subjects/{code}:
+    get:
+      tags: [subjects]
+      summary: One subject by code (CA-04)
+      parameters:
+        - $ref: '#/components/parameters/SubjectCode'
+      responses:
+        '200':
+          description: The subject
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Subject' }
+        '400': { $ref: './_shared.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared.yaml#/components/responses/Unauthorized' }
+        '404': { $ref: './_shared.yaml#/components/responses/NotFound' }
+
+  /catalog/subjects/{code}/sections:
+    get:
+      tags: [sections]
+      summary: Sections of a subject, newest first (CA-05)
+      parameters:
+        - $ref: '#/components/parameters/SubjectCode'
+        - $ref: './_shared.yaml#/components/parameters/Page'
+        - $ref: './_shared.yaml#/components/parameters/Limit'
+        - $ref: '#/components/parameters/TermFilter'
+      responses:
+        '200':
+          description: A page of sections (may be empty)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SectionPage' }
+        '400': { $ref: './_shared.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared.yaml#/components/responses/Unauthorized' }
+        '404': { $ref: './_shared.yaml#/components/responses/NotFound' }
+
+  /catalog/sections:
+    get:
+      tags: [sections]
+      summary: All sections, newest first (CA-06)
+      description: ADMIN only.
+      parameters:
+        - $ref: './_shared.yaml#/components/parameters/Page'
+        - $ref: './_shared.yaml#/components/parameters/Limit'
+        - $ref: '#/components/parameters/TermFilter'
+        - name: professorId
+          in: query
+          schema: { $ref: './_shared.yaml#/components/schemas/UUID' }
+      responses:
+        '200':
+          description: A page of sections
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SectionPage' }
+        '400': { $ref: './_shared.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_shared.yaml#/components/responses/Forbidden' }
+    post:
+      tags: [sections]
+      summary: Open a section of a subject (CA-09)
+      description: |
+        ADMIN only. The subject must exist (`404`); `groupNumber` is unique per subject and term;
+        the slots must not overlap among themselves (`INV-SEC-002`, `422`). `professorName` is a
+        snapshot the client fills from identity (ID-05/ID-06); catalog never reads identity-db.
+        `seatsAvailable` starts equal to `capacity`.
+      parameters:
+        - $ref: './_shared.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SectionRequest' }
+      responses:
+        '201':
+          description: Section opened
+          headers:
+            Location: { $ref: './_shared.yaml#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Section' }
+        '200':
+          description: Same `Idempotency-Key` - the section opened the first time
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Section' }
+        '400': { $ref: './_shared.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_shared.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_shared.yaml#/components/responses/NotFound' }
+        '422': { $ref: './_shared.yaml#/components/responses/BusinessRuleViolation' }
+
+  /catalog/sections/mine:
+    get:
+      tags: [sections]
+      summary: Sections assigned to the signed-in professor (CA-07)
+      parameters:
+        - $ref: './_shared.yaml#/components/parameters/Page'
+        - $ref: './_shared.yaml#/components/parameters/Limit'
+        - $ref: '#/components/parameters/TermFilter'
+      responses:
+        '200':
+          description: A page of sections where `professorId` is the token's `sub`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SectionPage' }
+        '400': { $ref: './_shared.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_shared.yaml#/components/responses/Forbidden' }
+
+  /catalog/sections/{id}:
+    get:
+      tags: [sections]
+      summary: One section (CA-08)
+      parameters:
+        - $ref: './_shared.yaml#/components/parameters/Id'
+      responses:
+        '200':
+          description: The section
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Section' }
+        '400': { $ref: './_shared.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared.yaml#/components/responses/Unauthorized' }
+        '404': { $ref: './_shared.yaml#/components/responses/NotFound' }
+
+  /catalog/sections/{id}/reservations:
+    post:
+      tags: [reservations]
+      summary: Reserve one seat for a student - saga step `reserve-seat` (CA-10)
+      description: |
+        SERVICE only. Decrements `seatsAvailable` under a row lock in the same transaction that
+        writes the reservation; `seatsAvailable` never goes below zero (`INV-SEC-001`): a full
+        section is `422 BUSINESS_RULE_VIOLATION` with message `NO_SEATS: ...`. A reservation not
+        committed within `expiresAt` (15 minutes) is released by `qone-worker`.
+      parameters:
+        - $ref: './_shared.yaml#/components/parameters/Id'
+        - $ref: './_shared.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [studentId, sagaId]
+              properties:
+                studentId: { $ref: './_shared.yaml#/components/schemas/UUID' }
+                sagaId: { $ref: './_shared.yaml#/components/schemas/UUID' }
+      responses:
+        '201':
+          description: Seat reserved
+          headers:
+            Location: { $ref: './_shared.yaml#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Reservation' }
+        '200':
+          description: Same `Idempotency-Key` - the reservation taken the first time
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Reservation' }
+        '400': { $ref: './_shared.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_shared.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_shared.yaml#/components/responses/NotFound' }
+        '422': { $ref: './_shared.yaml#/components/responses/BusinessRuleViolation' }
+
+  /catalog/sections/{id}/reservations/{reservationId}:
+    delete:
+      tags: [reservations]
+      summary: Release a reservation - compensation of `reserve-seat` (CA-11)
+      description: SERVICE only. Returns the seat; releasing an already released or expired reservation is `204` as well (D-04). A committed reservation cannot be released (`422`).
+      parameters:
+        - $ref: './_shared.yaml#/components/parameters/Id'
+        - $ref: '#/components/parameters/ReservationId'
+      responses:
+        '204': { description: Released }
+        '400': { $ref: './_shared.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_shared.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_shared.yaml#/components/responses/NotFound' }
+        '422': { $ref: './_shared.yaml#/components/responses/InvalidTransition' }
+
+  /catalog/sections/{id}/reservations/{reservationId}/commit:
+    post:
+      tags: [reservations]
+      summary: Make the seat definitive - saga step `commit-seat` (CA-12)
+      description: SERVICE only. `RESERVED` -> `COMMITTED`; committing a committed reservation returns it unchanged (`200`); a released or expired one is `422 INVALID_STATUS_TRANSITION`.
+      parameters:
+        - $ref: './_shared.yaml#/components/parameters/Id'
+        - $ref: '#/components/parameters/ReservationId'
+      responses:
+        '200':
+          description: The reservation, `COMMITTED`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Reservation' }
+        '400': { $ref: './_shared.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_shared.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_shared.yaml#/components/responses/NotFound' }
+        '422': { $ref: './_shared.yaml#/components/responses/InvalidTransition' }
+
+components:
+  securitySchemes:
+    bearerAuth: { $ref: './_shared.yaml#/components/securitySchemes/bearerAuth' }
+
+  parameters:
+    SubjectCode:
+      name: code
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[A-Z0-9-]{3,10}$' }
+    ReservationId:
+      name: reservationId
+      in: path
+      required: true
+      schema: { $ref: './_shared.yaml#/components/schemas/UUID' }
+    TermFilter:
+      name: term
+      in: query
+      schema: { $ref: './_shared.yaml#/components/schemas/Term' }
+
+  schemas:
+    SubjectRequest:
+      type: object
+      required: [code, name, credits, semester]
+      properties:
+        code: { type: string, pattern: '^[A-Z0-9-]{3,10}$', example: ISW-604 }
+        name: { type: string, minLength: 2, maxLength: 120 }
+        credits: { type: integer, minimum: 1, maximum: 10 }
+        semester: { type: integer, minimum: 1, maximum: 12 }
+        prerequisites:
+          type: array
+          description: Subject codes that must be passed first
+          items: { type: string, pattern: '^[A-Z0-9-]{3,10}$' }
+          default: []
+
+    Subject:
+      allOf:
+        - $ref: '#/components/schemas/SubjectRequest'
+        - type: object
+          required: [id, prerequisites, createdAt]
+          properties:
+            id: { $ref: './_shared.yaml#/components/schemas/UUID' }
+            createdAt: { $ref: './_shared.yaml#/components/schemas/DateTime' }
+
+    SubjectPage:
+      type: object
+      required: [data, meta]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Subject' } }
+        meta: { $ref: './_shared.yaml#/components/schemas/PageMeta' }
+
+    SectionRequest:
+      type: object
+      required: [subjectCode, term, groupNumber, professorId, professorName, capacity, slots]
+      properties:
+        subjectCode: { type: string, pattern: '^[A-Z0-9-]{3,10}$' }
+        term: { $ref: './_shared.yaml#/components/schemas/Term' }
+        groupNumber: { type: integer, minimum: 1, maximum: 99 }
+        professorId: { $ref: './_shared.yaml#/components/schemas/UUID' }
+        professorName: { type: string, minLength: 2, maxLength: 120 }
+        capacity: { type: integer, minimum: 1, maximum: 500 }
+        slots:
+          type: array
+          minItems: 1
+          items: { $ref: './_shared.yaml#/components/schemas/Slot' }
+
+    Section:
+      allOf:
+        - $ref: '#/components/schemas/SectionRequest'
+        - type: object
+          required: [id, subjectName, seatsAvailable, createdAt]
+          properties:
+            id: { $ref: './_shared.yaml#/components/schemas/UUID' }
+            subjectName: { type: string, description: Snapshot from the subject }
+            seatsAvailable: { type: integer, minimum: 0, description: 'capacity minus reserved and committed seats; never negative (INV-SEC-001)' }
+            createdAt: { $ref: './_shared.yaml#/components/schemas/DateTime' }
+
+    SectionPage:
+      type: object
+      required: [data, meta]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Section' } }
+        meta: { $ref: './_shared.yaml#/components/schemas/PageMeta' }
+
+    Reservation:
+      type: object
+      required: [id, sectionId, studentId, sagaId, status, expiresAt, createdAt]
+      properties:
+        id: { $ref: './_shared.yaml#/components/schemas/UUID' }
+        sectionId: { $ref: './_shared.yaml#/components/schemas/UUID' }
+        studentId: { $ref: './_shared.yaml#/components/schemas/UUID' }
+        sagaId: { $ref: './_shared.yaml#/components/schemas/UUID' }
+        status:
+          type: string
+          description: '`RESERVED` -> `COMMITTED` | `RELEASED` | `EXPIRED`; the last three are terminal'
+          enum: [RESERVED, COMMITTED, RELEASED, EXPIRED]
+        expiresAt: { $ref: './_shared.yaml#/components/schemas/DateTime' }
+        createdAt: { $ref: './_shared.yaml#/components/schemas/DateTime' }
