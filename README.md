@@ -45,11 +45,33 @@ tests/                       domain, use cases, HTTP, contract, architecture, po
 python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 ruff check .
-python -m pytest
+python -m pytest                                   # domain, use cases, HTTP, contract, architecture
+cp .env.example .env                               # JWT_PUBLIC_KEY (or _FILE), CATALOG_DATABASE_URL
+python -m apps.api                                 # http://localhost:8000/api/v1/catalog/health
 ```
 
-The HTTP server, its configuration (`.env.example`) and the PostgreSQL adapter arrive with the
-next pull requests of HU-CAT-001..003.
+Without `CATALOG_DATABASE_URL` the service starts over an empty in-memory store (development
+only; it says so in the log). With it, the store is `qone-catalog-db`: start that repository's
+compose, run its Flyway runner, and point the URL at it.
+
+Integration tests against the real schema and seeds (Annex C) run only when `TEST_DATABASE_URL`
+is set; `ci.yml` clones `qone-catalog-db`, migrates a fresh PostgreSQL and runs them, including
+two concurrent reservations of the last seat (exactly one succeeds):
+
+```bash
+TEST_DATABASE_URL=postgresql://catalog:password@localhost:5432/catalog python -m pytest tests/test_postgres_integration.py
+```
+
+Container image and compose (`deploy/`, Annex G): `docker build -f deploy/Dockerfile -t
+qone-catalog-api:dev .`, then `deploy/smoke.sh` against the running container; `ci.yml` builds
+and smoke-checks the image. `deploy/compose.yml` is what `qone-infra` includes: `expose` only,
+after `catalog-db` is healthy.
+
+Explicit limits (norm 5.3.10), declared in `apps/api/factory.py`: pool 10 connections with a
+5 s wait, statement timeout 5 s, keep-alive 60 s, graceful shutdown 20 s; the header read
+timeout is imposed by the gateway. A reservation lives `RESERVATION_TTL_MINUTES` (15).
+Every log line is JSON with the `traceId`. `scripts/sync-contracts.sh [ref]` refreshes the
+contract copies in `contracts/openapi/`.
 
 ## Branching
 
