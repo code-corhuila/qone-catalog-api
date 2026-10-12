@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, Request
 
-from catalog.adapter.inbound.http import errors
+from catalog.adapter.inbound.http import errors, routes_reservations, routes_sections  # noqa: F401 - they register routes
 from catalog.adapter.inbound.http.auth import TokenVerifier
 from catalog.adapter.inbound.http.router import router
 from catalog.application.port.inbound.catalog import CatalogUseCases
