@@ -98,6 +98,9 @@ class PostgresSubjectStore:
     def create(self, subject: Subject, idempotency_key: str, event: DomainEvent) -> tuple[Subject, bool]:
         try:
             with self._pool.connection() as conn, conn.transaction():
+                # The key first: a retry of the same intention returns the first row instead of
+                # tripping over a unique index its own first attempt filled.
+                _claim_key(conn, idempotency_key, "subject", subject.id)
                 try:
                     conn.execute(
                         "INSERT INTO catalog.subject (id, code, name, credits, semester, created_at) "
@@ -112,7 +115,6 @@ class PostgresSubjectStore:
                         "SELECT %s, id FROM catalog.subject WHERE code = %s",
                         (subject.id, code),
                     )
-                _claim_key(conn, idempotency_key, "subject", subject.id)
                 _write_event(conn, event)
         except _KeyAlreadyUsed:
             earlier = self.find_by_key(idempotency_key)
@@ -170,6 +172,9 @@ class PostgresSectionStore:
     def create(self, section: Section, idempotency_key: str, event: DomainEvent) -> tuple[Section, bool]:
         try:
             with self._pool.connection() as conn, conn.transaction():
+                # The key first: a retry of the same intention returns the first row instead of
+                # tripping over a unique index its own first attempt filled.
+                _claim_key(conn, idempotency_key, "section", section.id)
                 try:
                     conn.execute(
                         "INSERT INTO catalog.section (id, subject_id, term, group_number, "
@@ -195,7 +200,6 @@ class PostgresSectionStore:
                         "VALUES (%s, %s, %s, %s)",
                         (section.id, slot.day.value, slot.start, slot.end),
                     )
-                _claim_key(conn, idempotency_key, "section", section.id)
                 _write_event(conn, event)
         except _KeyAlreadyUsed:
             earlier = self.find_by_key(idempotency_key)
@@ -283,6 +287,10 @@ class PostgresReservationStore:
                 section = _one_section(conn, section_id, lock=True)  # INV-SEC-001: the row is ours until commit
                 if section is None:
                     return None
+                # A concurrent retry of the same intention waited for this lock; the first attempt has
+                # committed its key by now, so the retry answers the first reservation, not NO_SEATS.
+                if _resource_of(conn, idempotency_key, "seat_reservation") is not None:
+                    raise _KeyAlreadyUsed()
                 section, reservation, event = build(section)
                 conn.execute(
                     "UPDATE catalog.section SET seats_available = %s WHERE id = %s",

@@ -179,3 +179,15 @@ def test_two_concurrent_reservations_of_the_last_seat_give_exactly_one_success(s
         t.join()
     assert sorted(outcomes) == ["NO_SEATS", "reserved"]
     assert sections.find(ISW_604_G1).seats_available == 0
+
+
+def test_a_retry_of_the_same_key_returns_the_first_row_even_against_the_unique_indexes(stores, pool):
+    subjects, _, reservations = stores
+    first = Subject.create(uuid4(), "IT-901", "Primera", 3, 9, [], NOW)
+    subjects.create(first, "it-retry-subject-1", subject_created(first))
+    retry = Subject.create(uuid4(), "IT-901", "Reintento", 3, 9, [], NOW)
+    assert subjects.create(retry, "it-retry-subject-1", subject_created(retry)) == (first, False)
+    with pool.connection() as conn:
+        conn.execute("UPDATE catalog.section SET seats_available = 1 WHERE id = %s", (ISW_604_G1,))
+    reservation, _ = reservations.reserve(ISW_604_G1, "it-retry-reserve-1", build_for(uuid4()))
+    assert reservations.reserve(ISW_604_G1, "it-retry-reserve-1", build_for(uuid4())) == (reservation, False)
