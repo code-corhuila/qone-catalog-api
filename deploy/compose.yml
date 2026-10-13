@@ -1,0 +1,32 @@
+# The catalog service as qone-infra composes it (Annex G): expose only, reachable on the
+# platform network through the gateway; it starts after its database is healthy and after the
+# migrations ran (`run --rm catalog-db-migrate` from qone-infra). Every value comes from .env.
+services:
+  qone-catalog-api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: qone-catalog-api:${IMAGE_TAG:-dev}
+    container_name: qone-catalog-api
+    restart: unless-stopped
+    environment:
+      CATALOG_DATABASE_URL: postgresql://${CATALOG_DB_USER:-catalog}:${CATALOG_DB_PASSWORD:?CATALOG_DB_PASSWORD is required}@catalog-db:5432/${CATALOG_DB_NAME:-catalog}
+      JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY:?JWT_PUBLIC_KEY is required}
+      RESERVATION_TTL_MINUTES: ${RESERVATION_TTL_MINUTES:-15}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    expose:
+      - "8000"
+    depends_on:
+      catalog-db:
+        condition: service_healthy
+    networks:
+      - platform
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/catalog/health', timeout=2).status == 200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+networks:
+  platform:
+    external: true
