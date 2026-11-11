@@ -1,5 +1,5 @@
 """The FastAPI application of the catalog service: correlation and access log (norm 5.3.9),
-the error envelope, the routes."""
+the error envelope, the routes and the metrics (HU-OBS-001)."""
 
 import logging
 import time
@@ -7,10 +7,16 @@ from uuid import uuid4
 
 from fastapi import FastAPI, Request
 
-from catalog.adapter.inbound.http import errors, routes_reservations, routes_sections  # noqa: F401 - they register routes
+from catalog.adapter.inbound.http import (  # noqa: F401 - routes_* register routes
+    errors,
+    metrics,
+    routes_reservations,
+    routes_sections,
+)
 from catalog.adapter.inbound.http.auth import TokenVerifier
 from catalog.adapter.inbound.http.router import router
 from catalog.application.port.inbound.catalog import CatalogUseCases
+from catalog.application.usecase.readiness import Readiness
 
 SERVICE = "qone-catalog-api"
 VERSION = "2.0.0"
@@ -18,9 +24,10 @@ CORRELATION_HEADER = "X-Correlation-Id"
 access = logging.getLogger("catalog.access")
 
 
-def create_app(use_cases: CatalogUseCases, verifier: TokenVerifier) -> FastAPI:
+def create_app(use_cases: CatalogUseCases, verifier: TokenVerifier, readiness: Readiness | None = None) -> FastAPI:
     app = FastAPI(title=SERVICE, version=VERSION, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.use_cases = use_cases
+    app.state.readiness = readiness or Readiness([])
     app.state.verifier = verifier
     app.state.service = SERVICE
     app.state.version = VERSION
@@ -48,6 +55,7 @@ def create_app(use_cases: CatalogUseCases, verifier: TokenVerifier) -> FastAPI:
         )
         return response
 
+    metrics.install(app, SERVICE)  # the outermost middleware: it sees the final status, 500 included
     errors.install(app)
     app.include_router(router)
     return app

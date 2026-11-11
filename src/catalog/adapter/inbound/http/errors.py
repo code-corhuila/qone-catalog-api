@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from catalog.adapter.inbound.http.auth import AuthError
-from catalog.application.errors import Forbidden, NotFound
+from catalog.application.errors import Forbidden, NotFound, Unavailable
 from catalog.domain.model.errors import BusinessRuleViolation, FieldError, InvalidStatusTransition, ValidationError
 
 log = logging.getLogger("catalog.http")
@@ -57,6 +57,10 @@ def install(app: FastAPI) -> None:
     @app.exception_handler(InvalidStatusTransition)
     async def _transition(request: Request, error: InvalidStatusTransition):
         return envelope(request, 422, "INVALID_STATUS_TRANSITION", error.message)
+
+    @app.exception_handler(Unavailable)
+    async def _unavailable(request: Request, error: Unavailable):
+        return envelope(request, 503, "SERVICE_UNAVAILABLE", error.message)
 
     @app.exception_handler(StarletteHTTPException)
     async def _http(request: Request, error: StarletteHTTPException):

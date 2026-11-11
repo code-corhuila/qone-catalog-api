@@ -5,9 +5,14 @@
 - INV-SEC-001: a reservation locks the section row with SELECT ... FOR UPDATE, applies the
   domain rule and writes the new seat count, the reservation, the key and the event in the
   same transaction, so two concurrent reservations of the last seat give exactly one success.
+- The sweep of CA-13 reads the overdue reservations without locks (index
+  ix_seat_reservation_status_expires_at) and expires each one through `transition`.
 """
 
-from datetime import UTC, time
+import threading
+from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeout
+from datetime import UTC, datetime, time
 from uuid import UUID
 
 import psycopg
@@ -41,6 +46,44 @@ def connect(
         kwargs={"options": f"-c statement_timeout={statement_timeout_ms}", "row_factory": dict_row},
         open=True,
     )
+
+
+class PostgresProbe:
+    """The database of the ready probe: `SELECT 1` on a pooled connection within a hard deadline.
+    The pool bounds the wait for a connection and the statement timeout bounds the engine, but a
+    query on a pooled connection to a paused or partitioned database would block until TCP gives
+    up; so the check runs on a daemon thread and the probe waits for it at most `timeout_seconds`.
+    Overlapping probes share a check still pending instead of starting another one: at most one
+    thread is ever stuck."""
+
+    name = "database"
+
+    def __init__(self, pool: ConnectionPool, timeout_seconds: float = 2.0) -> None:
+        self._pool = pool
+        self._timeout = timeout_seconds
+        self._lock = threading.Lock()
+        self._pending: Future | None = None
+
+    def reachable(self) -> bool:
+        with self._lock:
+            if self._pending is None or self._pending.done():
+                self._pending = Future()
+                threading.Thread(target=self._select_one, args=(self._pending,), name="probe", daemon=True).start()
+            pending = self._pending
+        try:
+            return pending.result(timeout=self._timeout)
+        except FutureTimeout:  # the deadline passed: not ready, the pending check is reused
+            return False
+
+    def _select_one(self, outcome: Future) -> None:
+        try:
+            with self._pool.connection(timeout=self._timeout) as conn:
+                conn.execute(f"SET LOCAL statement_timeout = {int(self._timeout * 1000)}")
+                conn.execute("SELECT 1")
+        except Exception:  # noqa: BLE001 - any failure means "not ready"; the probe never raises
+            outcome.set_result(False)
+        else:
+            outcome.set_result(True)
 
 
 class _KeyAlreadyUsed(Exception):
@@ -332,6 +375,15 @@ class PostgresReservationStore:
             if event is not None:
                 _write_event(conn, event)
         return reservation
+
+    def overdue(self, now: datetime, limit: int) -> list[Reservation]:
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                f"SELECT {RESERVATION_COLUMNS} FROM catalog.seat_reservation WHERE status = 'RESERVED' "
+                "AND expires_at <= %s ORDER BY expires_at, id LIMIT %s",
+                (now, limit),
+            ).fetchall()
+        return [_reservation(r) for r in rows]
 
 
 def _reservation_values(r: Reservation) -> tuple:

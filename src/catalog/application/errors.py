@@ -11,3 +11,11 @@ class NotFound(Exception):
     def __init__(self, message: str = "resource not found") -> None:
         super().__init__(message)
         self.message = message
+
+
+class Unavailable(Exception):
+    """A dependency the service needs does not answer: the ready probe says 503 (HU-PLT-004)."""
+
+    def __init__(self, message: str = "a dependency is not reachable") -> None:
+        super().__init__(message)
+        self.message = message

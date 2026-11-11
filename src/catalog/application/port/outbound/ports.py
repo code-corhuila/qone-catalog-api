@@ -67,6 +67,11 @@ class ReservationStore(Protocol):
         """Locks the section and the reservation, calls `apply`, persists both and the event (if any)
         in ONE transaction. None when the reservation does not exist for that section."""
 
+    def overdue(self, now: datetime, limit: int) -> list[Reservation]:
+        """At most `limit` RESERVED reservations whose `expires_at <= now`, oldest expiry first
+        (the sweep of CA-13; index ix_seat_reservation_status_expires_at). A read without locks:
+        each one is then changed through `transition`, which locks and re-checks it."""
+
 
 class Clock(Protocol):
     def now(self) -> datetime: ...
@@ -74,3 +79,12 @@ class Clock(Protocol):
 
 class IdGenerator(Protocol):
     def new_id(self) -> UUID: ...
+
+
+class DependencyProbe(Protocol):
+    """One dependency of the ready probe (HU-PLT-004), named as the probe reports it."""
+
+    name: str
+
+    def reachable(self) -> bool:
+        """True when the dependency answers within the probe's own short timeout; never raises."""

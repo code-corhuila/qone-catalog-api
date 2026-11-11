@@ -50,7 +50,7 @@ def bearer(sub: str, role: str, name: str = "", **kw) -> dict[str, str]:
     return {"Authorization": f"Bearer {mint(sub, role, name, **kw)}"}
 
 
-def make_client() -> tuple[TestClient, InMemoryCatalog]:
+def make_client(clock: FixedClock | None = None) -> tuple[TestClient, InMemoryCatalog]:
     store = InMemoryCatalog(list(SUBJECTS), list(SECTIONS))
-    service = CatalogService(store, store, store, FixedClock(), SequenceIds())
+    service = CatalogService(store, store, store, clock or FixedClock(), SequenceIds())
     return TestClient(create_app(service, TokenVerifier(PUBLIC_PEM)), raise_server_exceptions=False), store

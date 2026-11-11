@@ -53,6 +53,13 @@ def health(request: Request):
     return {"status": "ok", "service": request.app.state.service, "version": request.app.state.version}
 
 
+@router.get("/health/ready")
+def ready(request: Request):
+    """HU-PLT-004: public like /health; 503 SERVICE_UNAVAILABLE when a dependency does not answer."""
+    checks = request.app.state.readiness.check()
+    return {"status": "ready", "service": request.app.state.service, "checks": checks}
+
+
 @router.get("/subjects")
 def list_subjects(
     who: Current,

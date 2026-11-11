@@ -9,14 +9,16 @@ from datetime import timedelta
 
 from catalog.adapter.inbound.http.app import create_app
 from catalog.adapter.inbound.http.auth import TokenVerifier
-from catalog.adapter.outbound.persistence.memory import InMemoryCatalog
+from catalog.adapter.outbound.persistence.memory import InMemoryCatalog, InMemoryProbe
 from catalog.adapter.outbound.runtime import SystemClock, Uuid4Generator
 from catalog.application.usecase.catalog import CatalogService
+from catalog.application.usecase.readiness import Readiness
 
 # Explicit limits (norm 5.3.10, Annex C), declared here with their values.
 DB_POOL_MAX = 10
 DB_WAIT_SECONDS = 5.0
 DB_STATEMENT_TIMEOUT_MS = 5000
+READY_PROBE_TIMEOUT_SECONDS = 2.0
 HTTP_KEEP_ALIVE_SECONDS = 60
 HTTP_GRACEFUL_SHUTDOWN_SECONDS = 20
 
@@ -49,6 +51,7 @@ def build_app(settings: Settings | None = None):
     log = logging.getLogger("catalog")
     if settings.database_url and settings.database_url != "memory":
         from catalog.adapter.outbound.persistence.postgres import (
+            PostgresProbe,
             PostgresReservationStore,
             PostgresSectionStore,
             PostgresSubjectStore,
@@ -61,15 +64,17 @@ def build_app(settings: Settings | None = None):
             PostgresSectionStore(pool),
             PostgresReservationStore(pool),
         )
+        probe = PostgresProbe(pool, READY_PROBE_TIMEOUT_SECONDS)
         log.info("store: postgresql (pool max %s, statement timeout %s ms)", DB_POOL_MAX, DB_STATEMENT_TIMEOUT_MS)
     else:
         memory = InMemoryCatalog()
         subjects = sections = reservations = memory
+        probe = InMemoryProbe()
         log.warning("store: in memory and empty (CATALOG_DATABASE_URL not set); development only")
     service = CatalogService(
         subjects, sections, reservations, SystemClock(), Uuid4Generator(), settings.reservation_ttl
     )
-    return create_app(service, TokenVerifier(settings.public_key))
+    return create_app(service, TokenVerifier(settings.public_key), Readiness([probe]))
 
 
 class JsonFormatter(logging.Formatter):
