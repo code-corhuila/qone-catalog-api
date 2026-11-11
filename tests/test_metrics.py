@@ -61,3 +61,11 @@ def test_every_app_has_its_own_registry():
     first.get(f"{BASE}/health")
     assert f'route="{BASE}/health"' in scrape(first)
     assert f'route="{BASE}/health"' not in scrape(second)
+
+
+def test_a_non_standard_method_is_counted_as_other():
+    client, _ = make_client()
+    client.request("PURGE", f"{BASE}/health")
+    text = scrape(client)
+    assert line_of(text, "http_server_requests_total", 'method="OTHER"').endswith(" 1.0")
+    assert 'method="PURGE"' not in text

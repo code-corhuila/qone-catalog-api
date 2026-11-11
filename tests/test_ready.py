@@ -2,7 +2,9 @@
 503 with the common envelope, public like /health) and the PostgreSQL probe against a database
 that does not answer (no TEST_DATABASE_URL needed: nothing listens on that port)."""
 
+import threading
 import time
+from contextlib import contextmanager
 
 import pytest
 from fastapi.testclient import TestClient
@@ -74,3 +76,45 @@ def test_the_postgres_probe_answers_false_within_its_timeout_when_nothing_listen
         assert time.monotonic() - started < 3
     finally:
         pool.close(timeout=1)
+
+
+class HangingPool:
+    """A pool whose connection never answers the query until released: a paused or partitioned
+    database, whose kernel still accepts the bytes while the engine never replies."""
+
+    def __init__(self) -> None:
+        self.release = threading.Event()
+        self.queries = 0
+
+    @contextmanager
+    def connection(self, timeout: float | None = None):
+        yield self
+
+    def execute(self, query: str) -> None:
+        if query == "SELECT 1":
+            self.queries += 1
+            self.release.wait(10)
+
+
+def test_the_postgres_probe_answers_false_by_its_deadline_when_the_query_hangs():
+    from catalog.adapter.outbound.persistence.postgres import PostgresProbe
+
+    pool = HangingPool()
+    probe = PostgresProbe(pool, timeout_seconds=0.3)
+    try:
+        started = time.monotonic()
+        assert probe.reachable() is False
+        assert probe.reachable() is False  # the check still pending is shared, not started again
+        assert time.monotonic() - started < 2
+        assert pool.queries == 1
+    finally:
+        pool.release.set()
+
+
+def test_the_postgres_probe_is_ready_when_the_query_answers():
+    from catalog.adapter.outbound.persistence.postgres import PostgresProbe
+
+    pool = HangingPool()
+    pool.release.set()
+    assert PostgresProbe(pool, timeout_seconds=0.3).reachable() is True
+    assert pool.queries == 1
