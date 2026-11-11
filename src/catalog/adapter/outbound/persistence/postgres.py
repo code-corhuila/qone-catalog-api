@@ -9,6 +9,9 @@
   ix_seat_reservation_status_expires_at) and expires each one through `transition`.
 """
 
+import threading
+from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeout
 from datetime import UTC, datetime, time
 from uuid import UUID
 
@@ -46,23 +49,41 @@ def connect(
 
 
 class PostgresProbe:
-    """The database of the ready probe: `SELECT 1` on a pooled connection, bounded by its own
-    wait for a connection and its own statement timeout."""
+    """The database of the ready probe: `SELECT 1` on a pooled connection within a hard deadline.
+    The pool bounds the wait for a connection and the statement timeout bounds the engine, but a
+    query on a pooled connection to a paused or partitioned database would block until TCP gives
+    up; so the check runs on a daemon thread and the probe waits for it at most `timeout_seconds`.
+    Overlapping probes share a check still pending instead of starting another one: at most one
+    thread is ever stuck."""
 
     name = "database"
 
     def __init__(self, pool: ConnectionPool, timeout_seconds: float = 2.0) -> None:
         self._pool = pool
         self._timeout = timeout_seconds
+        self._lock = threading.Lock()
+        self._pending: Future | None = None
 
     def reachable(self) -> bool:
+        with self._lock:
+            if self._pending is None or self._pending.done():
+                self._pending = Future()
+                threading.Thread(target=self._select_one, args=(self._pending,), name="probe", daemon=True).start()
+            pending = self._pending
+        try:
+            return pending.result(timeout=self._timeout)
+        except FutureTimeout:  # the deadline passed: not ready, the pending check is reused
+            return False
+
+    def _select_one(self, outcome: Future) -> None:
         try:
             with self._pool.connection(timeout=self._timeout) as conn:
                 conn.execute(f"SET LOCAL statement_timeout = {int(self._timeout * 1000)}")
                 conn.execute("SELECT 1")
-            return True
         except Exception:  # noqa: BLE001 - any failure means "not ready"; the probe never raises
-            return False
+            outcome.set_result(False)
+        else:
+            outcome.set_result(True)
 
 
 class _KeyAlreadyUsed(Exception):
