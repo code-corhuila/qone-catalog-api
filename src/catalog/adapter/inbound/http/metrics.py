@@ -10,6 +10,9 @@ from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, H
 
 METRICS_PATH = "/metrics"
 BUCKETS = (0.05, 0.1, 0.25, 0.5, 1, 2, 3, 5, 10)
+# The client chooses the method freely: anything else is folded into OTHER to bound the label.
+METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"})
+OTHER_METHOD = "OTHER"
 
 
 def install(app: FastAPI, service: str) -> CollectorRegistry:
@@ -36,8 +39,9 @@ def install(app: FastAPI, service: str) -> CollectorRegistry:
         response = await call_next(request)
         route = request.scope.get("route")
         template = getattr(route, "path", None) or "unmatched"  # the template, never the raw path
-        requests.labels(service, request.method, template, f"{response.status_code // 100}xx").inc()
-        duration.labels(service, request.method, template).observe(time.perf_counter() - started)
+        method = request.method if request.method in METHODS else OTHER_METHOD
+        requests.labels(service, method, template, f"{response.status_code // 100}xx").inc()
+        duration.labels(service, method, template).observe(time.perf_counter() - started)
         return response
 
     def scrape() -> Response:
