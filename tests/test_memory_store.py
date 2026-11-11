@@ -1,5 +1,6 @@
 """The in-memory stores keep the semantics the PostgreSQL adapter must keep."""
 
+from datetime import timedelta
 from uuid import uuid4
 
 import pytest
@@ -72,3 +73,23 @@ def test_reserve_and_transition_apply_the_function_as_one_unit(store):
 
     assert store.transition(ISW_604_G1.id, reservation.id, apply).status.value == "COMMITTED"
     assert store.transition(ISW_604_G1.id, uuid4(), apply) is None
+
+
+def test_overdue_lists_only_reserved_past_their_expiry_oldest_first_and_bounded(store):
+    def build_at(moment):
+        def build(section):
+            taken = section.take_seat()
+            reservation = Reservation.take(uuid4(), section.id, uuid4(), uuid4(), moment)
+            return taken, reservation, seat_reserved(reservation, taken.seats_available)
+
+        return build
+
+    late, _ = store.reserve(ISW_604_G1.id, "key-overdue-01", build_at(CREATED + timedelta(minutes=5)))
+    early, _ = store.reserve(ISW_604_G1.id, "key-overdue-02", build_at(CREATED))
+    fresh, _ = store.reserve(ISW_604_G1.id, "key-overdue-03", build_at(CREATED + timedelta(hours=1)))
+    gone, _ = store.reserve(ISW_604_G1.id, "key-overdue-04", build_at(CREATED))
+    store.transition(ISW_604_G1.id, gone.id, lambda s, r: (s, r.commit(CREATED)[0], None))
+    now = CREATED + timedelta(minutes=30)
+    assert [r.id for r in store.overdue(now, 10)] == [early.id, late.id]
+    assert [r.id for r in store.overdue(now, 1)] == [early.id]
+    assert fresh.id not in [r.id for r in store.overdue(now, 10)]

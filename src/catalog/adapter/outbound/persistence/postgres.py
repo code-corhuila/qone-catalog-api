@@ -5,9 +5,11 @@
 - INV-SEC-001: a reservation locks the section row with SELECT ... FOR UPDATE, applies the
   domain rule and writes the new seat count, the reservation, the key and the event in the
   same transaction, so two concurrent reservations of the last seat give exactly one success.
+- The sweep of CA-13 reads the overdue reservations without locks (index
+  ix_seat_reservation_status_expires_at) and expires each one through `transition`.
 """
 
-from datetime import UTC, time
+from datetime import UTC, datetime, time
 from uuid import UUID
 
 import psycopg
@@ -332,6 +334,15 @@ class PostgresReservationStore:
             if event is not None:
                 _write_event(conn, event)
         return reservation
+
+    def overdue(self, now: datetime, limit: int) -> list[Reservation]:
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                f"SELECT {RESERVATION_COLUMNS} FROM catalog.seat_reservation WHERE status = 'RESERVED' "
+                "AND expires_at <= %s ORDER BY expires_at, id LIMIT %s",
+                (now, limit),
+            ).fetchall()
+        return [_reservation(r) for r in rows]
 
 
 def _reservation_values(r: Reservation) -> tuple:

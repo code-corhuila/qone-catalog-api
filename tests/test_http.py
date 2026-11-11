@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 
+from tests.fakes import FixedClock
 from tests.http_support import (
     ANA,
     CARLOS,
@@ -49,6 +50,10 @@ def laura():
 
 def saga():
     return bearer("qone-workflow", "SERVICE", "qone-workflow")
+
+
+def worker():
+    return bearer("qone-worker", "SERVICE", "qone-worker")
 
 
 def reservation_of(client, section=ISW_604_G1, key="saga-1:reserve-seat", student=LAURA):
@@ -208,3 +213,42 @@ class TestReservations:
             f"{BASE}/sections/{ISW_604_G1}/reservations", json={"studentId": "x", "sagaId": "y"}, headers=saga()
         )
         assert [d["field"] for d in bad.json()["details"]] == ["Idempotency-Key", "studentId", "sagaId"]
+
+
+class TestExpirations:
+    """CA-13 (HU-PLT-003): POST /reservations/expirations, the worker's SERVICE token only."""
+
+    def test_the_sweep_expires_the_overdue_ones_and_a_second_call_finds_nothing(self):
+        clock = FixedClock()
+        client, store = make_client(clock)
+        overdue = reservation_of(client).json()["id"]
+        committed = reservation_of(client, key="saga-2:reserve-seat").json()["id"]
+        client.post(f"{BASE}/sections/{ISW_604_G1}/reservations/{committed}/commit", headers=saga())
+        clock.tick(minutes=16)
+        r = client.post(f"{BASE}/reservations/expirations", headers=worker())
+        assert r.status_code == 200 and r.json()["meta"] == {"expired": 1, "failed": 0}
+        assert [x["id"] for x in r.json()["data"]] == [overdue] and r.json()["data"][0]["status"] == "EXPIRED"
+        assert client.get(f"{BASE}/sections/{ISW_604_G1}", headers=laura()).json()["seatsAvailable"] == 26
+        assert store.outbox[-1].event_type == "SeatReleased"
+        again = client.post(f"{BASE}/reservations/expirations", json={"limit": 500}, headers=worker())
+        assert again.status_code == 200 and again.json() == {"data": [], "meta": {"expired": 0, "failed": 0}}
+
+    def test_the_limit_bounds_the_sweep_and_is_validated(self):
+        clock = FixedClock()
+        client, _ = make_client(clock)
+        for n in range(3):
+            reservation_of(client, key=f"saga-{n}:reserve-seat")
+        clock.tick(minutes=16)
+        r = client.post(f"{BASE}/reservations/expirations", json={"limit": 2}, headers=worker())
+        assert r.json()["meta"]["expired"] == 2
+        for body in ({"limit": 0}, {"limit": 501}, {"limit": "10"}):
+            bad = client.post(f"{BASE}/reservations/expirations", json=body, headers=worker())
+            assert bad.status_code == 400 and bad.json()["error"] == "VALIDATION_ERROR"
+            assert bad.json()["details"][0]["field"] == "limit"
+
+    def test_only_a_service_token_sweeps(self, client):
+        for headers in (laura(), admin()):
+            r = client.post(f"{BASE}/reservations/expirations", headers=headers)
+            assert r.status_code == 403 and r.json()["error"] == "FORBIDDEN" and r.json()["traceId"]
+        r = client.post(f"{BASE}/reservations/expirations")
+        assert r.status_code == 401 and r.json()["error"] == "UNAUTHORIZED"

@@ -2,11 +2,12 @@
 PostgreSQL adapter must keep: a key used once, unique code and group, the seat operations
 applied to the current section and reservation as one unit."""
 
+from datetime import datetime
 from uuid import UUID
 
 from catalog.application.port.outbound.ports import DuplicateCode, DuplicateGroup, ReserveFn, TransitionFn
 from catalog.domain.model.events import DomainEvent
-from catalog.domain.model.reservation import Reservation
+from catalog.domain.model.reservation import Reservation, ReservationStatus
 from catalog.domain.model.section import Section
 from catalog.domain.model.subject import Subject
 
@@ -103,3 +104,8 @@ class InMemoryCatalog:
         if event is not None:
             self.outbox.append(event)
         return reservation
+
+    def overdue(self, now: datetime, limit: int) -> list[Reservation]:
+        due = [r for r in self.reservations.values() if r.status is ReservationStatus.RESERVED and r.expires_at <= now]
+        due.sort(key=lambda r: (r.expires_at, str(r.id)))
+        return due[:limit]
