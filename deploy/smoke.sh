@@ -9,6 +9,8 @@ status() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 
 [ "$(status "$BASE/api/v1/catalog/health")" = "200" ] || fail "/health is not 200"
 curl -s "$BASE/api/v1/catalog/health" | grep -q '"service":"qone-catalog-api"' || fail "health does not name the service"
+[ "$(status "$BASE/api/v1/catalog/health/ready")" = "200" ] || fail "/health/ready is not 200"
+curl -s "$BASE/api/v1/catalog/health/ready" | grep -q '"status":"ready"' || fail "ready does not say ready"
 [ "$(status "$BASE/api/v1/catalog/subjects")" = "401" ] || fail "a request without a token is not 401"
 curl -s "$BASE/api/v1/catalog/subjects" | grep -q '"error":"UNAUTHORIZED"' || fail "401 has no envelope"
 [ "$(status "$BASE/api/v1/catalog/nothing")" = "404" ] || fail "an unknown route is not 404"

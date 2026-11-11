@@ -43,6 +43,26 @@ def connect(
     )
 
 
+class PostgresProbe:
+    """The database of the ready probe: `SELECT 1` on a pooled connection, bounded by its own
+    wait for a connection and its own statement timeout."""
+
+    name = "database"
+
+    def __init__(self, pool: ConnectionPool, timeout_seconds: float = 2.0) -> None:
+        self._pool = pool
+        self._timeout = timeout_seconds
+
+    def reachable(self) -> bool:
+        try:
+            with self._pool.connection(timeout=self._timeout) as conn:
+                conn.execute(f"SET LOCAL statement_timeout = {int(self._timeout * 1000)}")
+                conn.execute("SELECT 1")
+            return True
+        except Exception:  # noqa: BLE001 - any failure means "not ready"; the probe never raises
+            return False
+
+
 class _KeyAlreadyUsed(Exception):
     """Raised inside a transaction to roll it back when the Idempotency-Key existed."""
 

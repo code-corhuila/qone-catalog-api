@@ -11,6 +11,7 @@ from catalog.adapter.inbound.http import errors, routes_reservations, routes_sec
 from catalog.adapter.inbound.http.auth import TokenVerifier
 from catalog.adapter.inbound.http.router import router
 from catalog.application.port.inbound.catalog import CatalogUseCases
+from catalog.application.usecase.readiness import Readiness
 
 SERVICE = "qone-catalog-api"
 VERSION = "2.0.0"
@@ -18,9 +19,10 @@ CORRELATION_HEADER = "X-Correlation-Id"
 access = logging.getLogger("catalog.access")
 
 
-def create_app(use_cases: CatalogUseCases, verifier: TokenVerifier) -> FastAPI:
+def create_app(use_cases: CatalogUseCases, verifier: TokenVerifier, readiness: Readiness | None = None) -> FastAPI:
     app = FastAPI(title=SERVICE, version=VERSION, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.use_cases = use_cases
+    app.state.readiness = readiness or Readiness([])
     app.state.verifier = verifier
     app.state.service = SERVICE
     app.state.version = VERSION

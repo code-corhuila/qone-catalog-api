@@ -11,6 +11,15 @@ from catalog.domain.model.section import Section
 from catalog.domain.model.subject import Subject
 
 
+class InMemoryProbe:
+    """The in-memory runtime has no database to lose: always ready."""
+
+    name = "database"
+
+    def reachable(self) -> bool:
+        return True
+
+
 class InMemoryCatalog:
     """One object implements the three stores so the seat operations see the same sections."""
 
