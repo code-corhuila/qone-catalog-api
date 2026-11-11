@@ -70,7 +70,11 @@ after `catalog-db` is healthy.
 Explicit limits (norm 5.3.10), declared in `apps/api/factory.py`: pool 10 connections with a
 5 s wait, statement timeout 5 s, keep-alive 60 s, graceful shutdown 20 s; the header read
 timeout is imposed by the gateway. A reservation lives `RESERVATION_TTL_MINUTES` (15).
-Every log line is JSON with the `traceId`. `scripts/sync-contracts.sh [ref]` refreshes the
+Every log line is JSON with the `traceId`. `GET /metrics` (at the root, not under the prefix: the
+gateway never routes it) serves `http_server_requests_total{service,method,route,status_class}` and
+`http_server_request_duration_seconds{service,method,route}` for the Prometheus of `qone-infra`,
+which scrapes `qone-catalog-api:8000/metrics` on the platform network (HU-OBS-001); `route` is the
+route template, never the raw path. `scripts/sync-contracts.sh [ref]` refreshes the
 contract copies in `contracts/openapi/`.
 
 ## Branching

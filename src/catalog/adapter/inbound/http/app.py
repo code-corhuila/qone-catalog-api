@@ -1,5 +1,5 @@
 """The FastAPI application of the catalog service: correlation and access log (norm 5.3.9),
-the error envelope, the routes."""
+the error envelope, the routes and the metrics (HU-OBS-001)."""
 
 import logging
 import time
@@ -7,7 +7,12 @@ from uuid import uuid4
 
 from fastapi import FastAPI, Request
 
-from catalog.adapter.inbound.http import errors, routes_reservations, routes_sections  # noqa: F401 - they register routes
+from catalog.adapter.inbound.http import (  # noqa: F401 - routes_* register routes
+    errors,
+    metrics,
+    routes_reservations,
+    routes_sections,
+)
 from catalog.adapter.inbound.http.auth import TokenVerifier
 from catalog.adapter.inbound.http.router import router
 from catalog.application.port.inbound.catalog import CatalogUseCases
@@ -48,6 +53,7 @@ def create_app(use_cases: CatalogUseCases, verifier: TokenVerifier) -> FastAPI:
         )
         return response
 
+    metrics.install(app, SERVICE)  # the outermost middleware: it sees the final status, 500 included
     errors.install(app)
     app.include_router(router)
     return app
