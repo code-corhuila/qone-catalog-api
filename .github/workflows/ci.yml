@@ -18,8 +18,23 @@ jobs:
       - run: pip install -e ".[dev]"
       - name: Lint (ruff)
         run: ruff check .
-      - name: Domain, use-case, HTTP, contract and architecture tests
-        run: python -m pytest
+      - name: Domain, use-case, HTTP, contract and architecture tests with the coverage floor (README)
+        run: python -m pytest --cov=src --cov-report=term --cov-fail-under=80
+      - name: Dependency audit (known vulnerabilities)
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          pip-audit --skip-editable
+
+  secrets:
+    # Gitleaks over the whole history of the branch: a committed secret fails the pipeline.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Secret scan (gitleaks)
+        run: docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.21.2 detect --source /repo --redact --verbose
 
   integration:
     # The real engine with the schema of qone-catalog-db (Annex C). The schema is cloned from the

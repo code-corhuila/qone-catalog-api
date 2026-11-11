@@ -45,7 +45,7 @@ tests/                       domain, use cases, HTTP, contract, architecture, po
 python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 ruff check .
-python -m pytest                                   # domain, use cases, HTTP, contract, architecture
+python -m pytest --cov=src --cov-fail-under=80     # domain, use cases, HTTP, contract, architecture
 cp .env.example .env                               # JWT_PUBLIC_KEY (or _FILE), CATALOG_DATABASE_URL
 python -m apps.api                                 # http://localhost:8000/api/v1/catalog/health
 ```
@@ -53,6 +53,11 @@ python -m apps.api                                 # http://localhost:8000/api/v
 Without `CATALOG_DATABASE_URL` the service starts over an empty in-memory store (development
 only; it says so in the log). With it, the store is `qone-catalog-db`: start that repository's
 compose, run its Flyway runner, and point the URL at it.
+
+Quality gates of `ci.yml` (HU-PLT-005): the **coverage floor is 80 %** of the lines of `src/`
+(measured 81 % without the database, rounded down to the nearest 5; raise it when coverage
+grows, never lower it), `pip-audit --skip-editable` fails on a dependency with a known
+vulnerability, and gitleaks scans the whole history for committed secrets.
 
 Integration tests against the real schema and seeds (Annex C) run only when `TEST_DATABASE_URL`
 is set; `ci.yml` clones `qone-catalog-db`, migrates a fresh PostgreSQL and runs them, including
