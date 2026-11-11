@@ -55,6 +55,11 @@ cp .env.example .env                               # JWT_PUBLIC_KEY (or _FILE), 
 python -m apps.api                                 # http://localhost:8000/api/v1/catalog/health
 ```
 
+`/api/v1/catalog/health` is liveness (always 200 while the process serves). `/api/v1/catalog/health/ready`
+is readiness (HU-PLT-004): 200 `{"status":"ready","checks":{"database":"ok"}}` when `SELECT 1`
+answers within 2 s, otherwise 503 `SERVICE_UNAVAILABLE` with the common envelope. Both are public;
+the rollout of `qone-infra` waits for the new container to be ready before it stops the old one.
+
 Without `CATALOG_DATABASE_URL` the service starts over an empty in-memory store (development
 only; it says so in the log). With it, the store is `qone-catalog-db`: start that repository's
 compose, run its Flyway runner, and point the URL at it.

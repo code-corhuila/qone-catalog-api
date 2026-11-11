@@ -193,6 +193,12 @@ def test_a_retry_of_the_same_key_returns_the_first_row_even_against_the_unique_i
     assert reservations.reserve(ISW_604_G1, "it-retry-reserve-1", build_for(uuid4())) == (reservation, False)
 
 
+def test_the_ready_probe_reaches_the_real_database(pool):
+    from catalog.adapter.outbound.persistence.postgres import PostgresProbe
+
+    assert PostgresProbe(pool).reachable() is True
+
+
 def test_the_sweep_expires_only_overdue_reserved_rows_and_writes_seat_released(stores, pool):
     """CA-13 (HU-PLT-003) over the real engine: each overdue reservation in its own transaction."""
     from catalog.application.port.inbound.caller import Caller, Role
