@@ -1,4 +1,4 @@
-"""What the catalog service offers (Annex C, inbound ports): CA-02..CA-12 as commands, results
+"""What the catalog service offers (Annex C, inbound ports): CA-02..CA-13 as commands, results
 and the use-case interface the HTTP adapter depends on."""
 
 from dataclasses import dataclass
@@ -13,6 +13,8 @@ from catalog.domain.model.subject import Subject
 
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 100
+SWEEP_DEFAULT_LIMIT = 100
+SWEEP_MAX_LIMIT = 500
 
 
 @dataclass(frozen=True)
@@ -47,6 +49,13 @@ class Created[T]:
     item: T
     created: bool
     """False when the Idempotency-Key had been used: the item is the one created first."""
+
+
+@dataclass(frozen=True)
+class Sweep:
+    expired: list[Reservation]
+    failed: int
+    """Overdue reservations that could not be expired this time; the next sweep finds them again."""
 
 
 @dataclass(frozen=True)
@@ -96,3 +105,7 @@ class CatalogUseCases(Protocol):
 
     def commit(self, caller: Caller, section_id: UUID, reservation_id: UUID) -> Reservation:
         """CA-12, SERVICE. Idempotent on a committed reservation; released or expired is an invalid transition."""
+
+    def expire_overdue(self, caller: Caller, limit: int = SWEEP_DEFAULT_LIMIT) -> Sweep:
+        """CA-13, SERVICE (qone-worker). Expires at most `limit` (1..500) overdue RESERVED reservations,
+        oldest first, each in its own transaction; one failure is counted and does not stop the rest."""

@@ -1,10 +1,10 @@
-"""Reservation routes of the enrollment saga (CA-10..CA-12) on the catalog router: SERVICE
-token only, enforced by the use case."""
+"""Reservation routes of the enrollment saga (CA-10..CA-12) and the worker's sweep (CA-13) on
+the catalog router: SERVICE token only, enforced by the use case."""
 
 from uuid import UUID
 
 from fastapi import Request, Response
-from pydantic import BaseModel, ConfigDict, StrictStr
+from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr
 
 from catalog.adapter.inbound.http.router import (
     PREFIX,
@@ -16,7 +16,7 @@ from catalog.adapter.inbound.http.router import (
     rfc3339,
     router,
 )
-from catalog.application.port.inbound.catalog import ReserveSeat
+from catalog.application.port.inbound.catalog import SWEEP_DEFAULT_LIMIT, ReserveSeat
 from catalog.domain.model.errors import FieldError, ValidationError
 from catalog.domain.model.reservation import Reservation
 
@@ -25,6 +25,11 @@ class ReservationBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
     studentId: StrictStr  # noqa: N815
     sagaId: StrictStr  # noqa: N815
+
+
+class ExpirationsBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    limit: StrictInt = SWEEP_DEFAULT_LIMIT
 
 
 @router.post("/sections/{section_id}/reservations")
@@ -60,6 +65,15 @@ def commit(section_id: str, reservation_id: str, who: Current, service: UseCases
     return represent_reservation(
         service.commit(who, parse_uuid(section_id, "id"), parse_uuid(reservation_id, "reservationId"))
     )
+
+
+@router.post("/reservations/expirations")
+def expire_overdue(who: Current, service: UseCases, body: ExpirationsBody | None = None):
+    sweep = service.expire_overdue(who, (body or ExpirationsBody()).limit)
+    return {
+        "data": [represent_reservation(r) for r in sweep.expired],
+        "meta": {"expired": len(sweep.expired), "failed": sweep.failed},
+    }
 
 
 def represent_reservation(reservation: Reservation) -> dict:

@@ -1,8 +1,10 @@
-"""The operations of the catalog service (CA-02..CA-12) over the ports. Authorization by role
+"""The operations of the catalog service (CA-02..CA-13) over the ports. Authorization by role
 happens here (07-api/authentication.md access matrix: reads for everyone signed in, creation
 for ADMIN, the professor's own sections, reservations for the saga's SERVICE token only).
 Input bounds carry the contract's field names so the HTTP adapter only translates."""
 
+import logging
+from collections.abc import Callable
 from datetime import timedelta
 from uuid import UUID
 
@@ -10,12 +12,15 @@ from catalog.application.errors import Forbidden, NotFound
 from catalog.application.port.inbound.caller import Caller, Role
 from catalog.application.port.inbound.catalog import (
     MAX_LIMIT,
+    SWEEP_DEFAULT_LIMIT,
+    SWEEP_MAX_LIMIT,
     CatalogUseCases,
     Created,
     CreateSubject,
     OpenSection,
     Page,
     ReserveSeat,
+    Sweep,
 )
 from catalog.application.port.outbound.ports import (
     Clock,
@@ -33,6 +38,7 @@ from catalog.domain.model.section import TERM_PATTERN, Section
 from catalog.domain.model.subject import CODE_PATTERN, Subject, ensure_acyclic
 
 KEY_MIN, KEY_MAX = 8, 128
+log = logging.getLogger("catalog.sweep")
 SIGNED_IN = (Role.STUDENT, Role.PROFESSOR, Role.ADMIN, Role.SERVICE)
 
 
@@ -184,16 +190,37 @@ class CatalogService(CatalogUseCases):
     def release(self, caller: Caller, section_id: UUID, reservation_id: UUID) -> None:
         _require(caller, Role.SERVICE)
         now = self._clock.now()
-
-        def apply(section: Section, reservation: Reservation):
-            released, seat_back = reservation.release(now)
-            if not seat_back:
-                return section, released, None
-            freed = section.give_seat_back()
-            return freed, released, seat_released(released, freed.seats_available)
-
+        apply = _giving_the_seat_back(lambda reservation: reservation.release(now))
         if self._reservations.transition(section_id, reservation_id, apply) is None:
             raise NotFound()
+
+    def expire_overdue(self, caller: Caller, limit: int = SWEEP_DEFAULT_LIMIT) -> Sweep:
+        _require(caller, Role.SERVICE)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= SWEEP_MAX_LIMIT:
+            raise ValidationError([FieldError("limit", f"must be between 1 and {SWEEP_MAX_LIMIT}")])
+        now = self._clock.now()
+        swept: set[UUID] = set()
+
+        def expire(reservation: Reservation) -> tuple[Reservation, bool]:
+            # Re-checked under the lock: the saga may have committed or released it since the read.
+            after, seat_back = reservation.expire(now)
+            if seat_back:
+                swept.add(after.id)
+            return after, seat_back
+
+        apply = _giving_the_seat_back(expire)
+        expired: list[Reservation] = []
+        failed = 0
+        for due in self._reservations.overdue(now, limit):
+            try:
+                after = self._reservations.transition(due.section_id, due.id, apply)
+            except Exception:  # noqa: BLE001 - one reservation never stops the sweep; the next one retries it
+                log.exception("reservation %s of section %s not expired", due.id, due.section_id)
+                failed += 1
+                continue
+            if after is not None and after.id in swept:
+                expired.append(after)
+        return Sweep(expired, failed)
 
     def commit(self, caller: Caller, section_id: UUID, reservation_id: UUID) -> Reservation:
         _require(caller, Role.SERVICE)
@@ -207,6 +234,20 @@ class CatalogService(CatalogUseCases):
         if committed is None:
             raise NotFound()
         return committed
+
+
+def _giving_the_seat_back(change: Callable[[Reservation], tuple[Reservation, bool]]):
+    """The release path of CA-11 and CA-13: the seat returns and SeatReleased is written only
+    when the reservation was RESERVED; otherwise the reservation is persisted unchanged."""
+
+    def apply(section: Section, reservation: Reservation):
+        changed, seat_back = change(reservation)
+        if not seat_back:
+            return section, changed, None
+        freed = section.give_seat_back()
+        return freed, changed, seat_released(changed, freed.seats_available)
+
+    return apply
 
 
 def _require(caller: Caller, *roles: Role) -> None:
