@@ -57,7 +57,8 @@ compose, run its Flyway runner, and point the URL at it.
 Quality gates of `ci.yml` (HU-PLT-005): the **coverage floor is 80 %** of the lines of `src/`
 (measured 81 % without the database, rounded down to the nearest 5; raise it when coverage
 grows, never lower it), `pip-audit --skip-editable` fails on a dependency with a known
-vulnerability, and gitleaks scans the whole history for committed secrets.
+vulnerability, and gitleaks scans the whole history for committed secrets (`.gitleaks.toml`
+allowlists only `tests/`, whose fake keys and tokens are fixtures).
 
 Integration tests against the real schema and seeds (Annex C) run only when `TEST_DATABASE_URL`
 is set; `ci.yml` clones `qone-catalog-db`, migrates a fresh PostgreSQL and runs them, including
