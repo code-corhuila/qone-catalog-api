@@ -79,3 +79,12 @@ class Clock(Protocol):
 
 class IdGenerator(Protocol):
     def new_id(self) -> UUID: ...
+
+
+class DependencyProbe(Protocol):
+    """One dependency of the ready probe (HU-PLT-004), named as the probe reports it."""
+
+    name: str
+
+    def reachable(self) -> bool:
+        """True when the dependency answers within the probe's own short timeout; never raises."""
