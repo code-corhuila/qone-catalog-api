@@ -13,6 +13,7 @@ curl -s "$BASE/api/v1/catalog/health" | grep -q '"service":"qone-catalog-api"' |
 curl -s "$BASE/api/v1/catalog/health/ready" | grep -q '"status":"ready"' || fail "ready does not say ready"
 [ "$(status "$BASE/api/v1/catalog/subjects")" = "401" ] || fail "a request without a token is not 401"
 curl -s "$BASE/api/v1/catalog/subjects" | grep -q '"error":"UNAUTHORIZED"' || fail "401 has no envelope"
+[ "$(status -X POST "$BASE/api/v1/catalog/reservations/expirations")" = "401" ] || fail "the sweep without a token is not 401"
 [ "$(status "$BASE/api/v1/catalog/nothing")" = "404" ] || fail "an unknown route is not 404"
 curl -s "$BASE/api/v1/catalog/nothing" | grep -q '"error":"NOT_FOUND"' || fail "404 has no envelope"
 corr=$(curl -s -D - -o /dev/null -H 'X-Correlation-Id: smoke-1' "$BASE/api/v1/catalog/health" | tr -d '\r' | grep -i '^x-correlation-id:' | cut -d' ' -f2)

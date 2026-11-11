@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 
 from catalog.domain.model.errors import InvalidStatusTransition
+from catalog.domain.model.events import seat_released
 from catalog.domain.model.reservation import Reservation, ReservationStatus
 
 NOW = datetime(2026, 10, 12, 15, 0, tzinfo=UTC)
@@ -53,3 +54,13 @@ def test_expiry_only_after_expires_at_and_only_when_reserved():
     assert expired.expire(NOW + timedelta(minutes=20)) == (expired, False)
     with pytest.raises(InvalidStatusTransition):
         expired.commit(NOW + timedelta(minutes=20))
+
+
+def test_expiry_is_due_at_expires_at_itself_and_its_seat_released_event_carries_that_instant():
+    r = take()
+    expired, changed = r.expire(r.expires_at)
+    assert changed and expired.updated_at == r.expires_at
+    event = seat_released(expired, 28)
+    assert event.event_type == "SeatReleased" and event.payload["occurredAt"] == "2026-10-12T15:15:00Z"
+    committed, _ = take().commit(LATER)
+    assert committed.expire(NOW + timedelta(hours=1)) == (committed, False)

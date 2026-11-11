@@ -4,7 +4,7 @@ Includes the saga's concurrency check: two reservations of the last seat, exactl
 
 import os
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -133,10 +133,10 @@ def test_a_section_is_opened_with_its_slots_and_a_repeated_group_is_refused(stor
         sections.create(dup, "it-section-key-2", section_created(dup))
 
 
-def build_for(student: UUID):
+def build_for(student: UUID, taken_at: datetime = NOW):
     def build(section):
         taken = section.take_seat()
-        reservation = Reservation.take(uuid4(), section.id, student, uuid4(), NOW)
+        reservation = Reservation.take(uuid4(), section.id, student, uuid4(), taken_at)
         return taken, reservation, seat_reserved(reservation, taken.seats_available)
 
     return build
@@ -197,3 +197,30 @@ def test_the_ready_probe_reaches_the_real_database(pool):
     from catalog.adapter.outbound.persistence.postgres import PostgresProbe
 
     assert PostgresProbe(pool).reachable() is True
+
+
+def test_the_sweep_expires_only_overdue_reserved_rows_and_writes_seat_released(stores, pool):
+    """CA-13 (HU-PLT-003) over the real engine: each overdue reservation in its own transaction."""
+    from catalog.application.port.inbound.caller import Caller, Role
+    from catalog.application.usecase.catalog import CatalogService
+    from tests.fakes import FixedClock, SequenceIds
+
+    subjects, sections, reservations = stores
+    overdue, _ = reservations.reserve(ISW_604_G1, "it-sweep-key-1", build_for(uuid4()))
+    committed, _ = reservations.reserve(ISW_604_G1, "it-sweep-key-2", build_for(uuid4()))
+    reservations.transition(ISW_604_G1, committed.id, lambda s, r: (s, r.commit(NOW)[0], None))
+    not_due, _ = reservations.reserve(ISW_604_G1, "it-sweep-key-3", build_for(uuid4(), NOW + timedelta(minutes=10)))
+    assert sections.find(ISW_604_G1).seats_available == 24
+    later = NOW + timedelta(minutes=16)
+    assert [r.id for r in reservations.overdue(later, 100)] == [overdue.id]
+    service = CatalogService(subjects, sections, reservations, FixedClock(later), SequenceIds())
+    sweep = service.expire_overdue(Caller(None, Role.SERVICE, "qone-worker", "qone-worker"))
+    assert [r.id for r in sweep.expired] == [overdue.id] and sweep.failed == 0
+    assert reservations.find(ISW_604_G1, overdue.id).status is ReservationStatus.EXPIRED
+    assert reservations.find(ISW_604_G1, committed.id).status is ReservationStatus.COMMITTED
+    assert reservations.find(ISW_604_G1, not_due.id).status is ReservationStatus.RESERVED
+    assert sections.find(ISW_604_G1).seats_available == 25
+    with pool.connection() as conn:
+        rows = conn.execute("SELECT payload FROM catalog.outbox WHERE event_type = 'SeatReleased'").fetchall()
+    assert [(r["payload"]["reservationId"], r["payload"]["seatsAvailable"]) for r in rows] == [(str(overdue.id), 25)]
+    assert service.expire_overdue(Caller(None, Role.SERVICE, "qone-worker", "qone-worker")).expired == []

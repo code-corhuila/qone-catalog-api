@@ -12,9 +12,10 @@ sections with schedule and seats, and the seat reservations the enrollment saga 
 and commits (ADR-008, steps `reserve-seat` and `commit-seat`). Python 3.12 + FastAPI, hexagonal
 (ADR-007): the domain and the use cases import no framework and no driver; a test enforces it.
 
-- Contract: `07-api/contracts/openapi/qone-catalog-api.yaml` (CA-01..CA-12) in `qone-docs`.
+- Contract: `07-api/contracts/openapi/qone-catalog-api.yaml` (CA-01..CA-12) in `qone-docs`, plus
+  CA-13 `POST /api/v1/catalog/reservations/expirations` (the CA-11 note of `07-api/endpoint-catalog.md`).
 - Data: `qone-catalog-db` owns the schema `catalog`; this service never versions it.
-- Piece page: `09-microservices/services/03-catalog-api/README.md`. Stories: `code-corhuila/qone-docs#37`, `#38`, `#39` (HU-CAT-001..003).
+- Piece page: `09-microservices/services/03-catalog-api/README.md`. Stories: `code-corhuila/qone-docs#37`, `#38`, `#39` (HU-CAT-001..003), `#58` (HU-PLT-003).
 
 ## Layout (Annex C, Python)
 
@@ -37,6 +38,10 @@ tests/                       domain, use cases, HTTP, contract, architecture, po
   (INV-SEC-001): the reservation decrements it under `SELECT ... FOR UPDATE`.
 - A reservation is RESERVED for 15 minutes, then COMMITTED by the saga, RELEASED by its
   compensation or EXPIRED by `qone-worker`; commit and release are idempotent (D-04).
+- CA-13 (SERVICE token only): the worker's sweep expires at most `limit` (1..500, default 100)
+  overdue RESERVED reservations, oldest first, each in its own transaction with the release path
+  (seat back, `SeatReleased` in the outbox). A failure is counted in `meta.failed` and does not
+  stop the others; a second call finds nothing.
 - Every creation is idempotent by `Idempotency-Key`; every change writes its event to the outbox.
 
 ## How to run it
@@ -75,7 +80,11 @@ after `catalog-db` is healthy.
 Explicit limits (norm 5.3.10), declared in `apps/api/factory.py`: pool 10 connections with a
 5 s wait, statement timeout 5 s, keep-alive 60 s, graceful shutdown 20 s; the header read
 timeout is imposed by the gateway. A reservation lives `RESERVATION_TTL_MINUTES` (15).
-Every log line is JSON with the `traceId`. `scripts/sync-contracts.sh [ref]` refreshes the
+Every log line is JSON with the `traceId`. `GET /metrics` (at the root, not under the prefix: the
+gateway never routes it) serves `http_server_requests_total{service,method,route,status_class}` and
+`http_server_request_duration_seconds{service,method,route}` for the Prometheus of `qone-infra`,
+which scrapes `qone-catalog-api:8000/metrics` on the platform network (HU-OBS-001); `route` is the
+route template, never the raw path. `scripts/sync-contracts.sh [ref]` refreshes the
 contract copies in `contracts/openapi/`.
 
 ## Branching

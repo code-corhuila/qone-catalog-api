@@ -34,6 +34,7 @@ laura = Caller(LAURA, Role.STUDENT, "Laura Gómez")
 carlos = Caller(CARLOS, Role.PROFESSOR, "Carlos Ramírez")
 ana = Caller(ANA, Role.PROFESSOR, "Ana Torres")
 saga = Caller(None, Role.SERVICE, "qone-workflow", "qone-workflow")
+worker = Caller(None, Role.SERVICE, "qone-worker", "qone-worker")
 KEY = "subject-6f1d2c3e-9b7a-4e1f-8c2d-0a1b2c3d4e5f"
 SLOTS = (Slot.parse("TUE", "10:00", "12:00"),)
 
@@ -190,3 +191,67 @@ class TestReservations:
             service.commit(saga, ISW_604_G1.id, uuid4())
         with pytest.raises(ValidationError):
             service.reserve(saga, ReserveSeat(ISW_604_G1.id, LAURA, uuid4()), "short")
+
+
+class TestExpirations:
+    """CA-13, HU-PLT-003: the worker's sweep gives back the seats of abandoned sagas."""
+
+    def reserve(self, service, key, section=ISW_604_G1):
+        return service.reserve(saga, ReserveSeat(section.id, uuid4(), uuid4()), key).item
+
+    def test_the_sweep_expires_only_overdue_reserved_ones_oldest_first_with_their_events(self, world):
+        store, clock, service = world
+        first = self.reserve(service, "saga-10:reserve-seat")
+        clock.tick(minutes=1)
+        second = self.reserve(service, "saga-11:reserve-seat")
+        committed = service.commit(saga, ISW_604_G1.id, self.reserve(service, "saga-12:reserve-seat").id)
+        released = self.reserve(service, "saga-13:reserve-seat")
+        service.release(saga, ISW_604_G1.id, released.id)
+        clock.tick(minutes=10)
+        not_due = self.reserve(service, "saga-14:reserve-seat")
+        assert store.find(ISW_604_G1.id).seats_available == 23
+        clock.tick(minutes=6)  # first and second are past their 15 minutes; not_due is not
+        sweep = service.expire_overdue(worker)
+        assert [r.id for r in sweep.expired] == [first.id, second.id] and sweep.failed == 0
+        assert all(r.status is ReservationStatus.EXPIRED for r in sweep.expired)
+        assert store.find(ISW_604_G1.id).seats_available == 25
+        assert [e.event_type for e in store.outbox[-2:]] == ["SeatReleased", "SeatReleased"]
+        assert store.outbox[-1].payload["seatsAvailable"] == 25
+        assert store.find(ISW_604_G1.id, committed.id).status is ReservationStatus.COMMITTED
+        assert store.find(ISW_604_G1.id, released.id).status is ReservationStatus.RELEASED
+        assert store.find(ISW_604_G1.id, not_due.id).status is ReservationStatus.RESERVED
+        again = service.expire_overdue(worker)  # idempotent by nature: nothing is due any more
+        assert again.expired == [] and again.failed == 0 and len(store.outbox) == 9
+
+    def test_the_sweep_is_bounded_by_its_limit(self, world):
+        store, clock, service = world
+        for n in range(3):
+            self.reserve(service, f"saga-2{n}:reserve-seat")
+        clock.tick(minutes=16)
+        assert len(service.expire_overdue(worker, 2).expired) == 2
+        assert len(service.expire_overdue(worker, 2).expired) == 1
+
+    def test_one_failing_reservation_is_counted_and_does_not_stop_the_others(self, world):
+        store, clock, service = world
+        broken = self.reserve(service, "saga-30:reserve-seat")
+        fine = self.reserve(service, "saga-31:reserve-seat")
+        clock.tick(minutes=16)
+        transition = store.transition
+
+        def flaky(section_id, reservation_id, apply):
+            if reservation_id == broken.id:
+                raise ConnectionError("lock timeout")
+            return transition(section_id, reservation_id, apply)
+
+        store.transition = flaky
+        sweep = service.expire_overdue(worker)
+        assert [r.id for r in sweep.expired] == [fine.id] and sweep.failed == 1
+
+    def test_only_a_service_token_sweeps_and_the_limit_is_between_1_and_500(self, world):
+        _, _, service = world
+        for caller in (laura, carlos, admin):
+            with pytest.raises(Forbidden):
+                service.expire_overdue(caller)
+        for limit in (0, 501, True, "10"):
+            with pytest.raises(ValidationError):
+                service.expire_overdue(worker, limit)
